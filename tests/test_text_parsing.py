@@ -104,10 +104,43 @@ def test_unparsable_date_is_an_error():
         DEFAULT_CODECS["date"].decode("someday", c)
 
 
-def test_unsupported_pattern_surfaces_as_error():
-    c, _ = make_ctx("mmm yyyy")
-    with pytest.raises(ValueError, match="unsupported"):
+def test_untranslatable_pattern_uses_fallback_list():
+    c, warnings = make_ctx("mmm yyyy", "DATE")
+    assert DEFAULT_CODECS["date"].decode("12.10.2026", c) == date(2026, 10, 12)
+    assert warnings == ["dd.mm.yyyy"]
+    with pytest.raises(ValueError, match="cannot parse"):
         DEFAULT_CODECS["date"].decode("Oct 2026", c)
+
+
+def test_number_pattern_affixes_only_at_the_ends():
+    c, warnings = make_ctx('0.00 "v2"')
+    assert DEFAULT_CODECS["float"].decode("12.00 v2", c) == 12.0
+    c2, _ = make_ctx('0 "v2"')
+    assert DEFAULT_CODECS["float"].decode("22 v2", c2) == 22.0
+    c3, _ = make_ctx('"v2 "0.00')
+    assert DEFAULT_CODECS["float"].decode("v2 12.00", c3) == 12.0
+    assert warnings == []
+
+
+def test_number_pattern_does_not_touch_internal_characters():
+    c, warnings = make_ctx("#,##0.00")
+    assert DEFAULT_CODECS["float"].decode("1 234,56", c) == 1234.56  # internal spaces: pattern path fails -> fallback
+    assert warnings == ["number fallback"]
+
+
+def test_number_percent_only_consumed_when_pattern_has_it():
+    c, warnings = make_ctx("0.00")
+    assert DEFAULT_CODECS["float"].decode("12%", c) == pytest.approx(0.12)
+    assert warnings == ["number fallback"]
+
+
+def test_number_comma_only_dropped_when_pattern_has_grouping():
+    c, warnings = make_ctx("0%", "PERCENT")
+    assert DEFAULT_CODECS["float"].decode("0,5%", c) == pytest.approx(0.005)
+    assert warnings == ["number fallback"]
+    c2, warnings2 = make_ctx("0%", "PERCENT")
+    assert DEFAULT_CODECS["float"].decode("0,5", c2) == pytest.approx(0.5)  # no % in the text: fallback gives 0.5
+    assert warnings2 == ["number fallback"]
 
 
 def test_number_pattern_hit_is_silent():

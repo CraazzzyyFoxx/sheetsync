@@ -107,10 +107,9 @@ def _parse_datetime_text(text: str, ctx: Ctx) -> datetime:
     text = text.strip()
     pattern = ctx.format.pattern if ctx.format else None
     if pattern:
-        fmt = sheets_pattern_to_strptime(pattern)
         try:
-            return datetime.strptime(text, fmt)
-        except ValueError:
+            return datetime.strptime(text, sheets_pattern_to_strptime(pattern))
+        except ValueError:  # no match, or a pattern we cannot translate (e.g. month names): use the fallback list
             pass
     found: dict[datetime, str] = {}  # distinct value -> label of the first fallback that produced it
     try:
@@ -137,7 +136,6 @@ def _parse_datetime_text(text: str, ctx: Ctx) -> datetime:
 
 
 _NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
-_NUMBER_KEEP = "0#?,.%Ee+-"
 
 
 def _plain_number(s: str) -> float | None:
@@ -154,10 +152,12 @@ def _parse_number_text(text: str, ctx: Ctx) -> float:
             pass
     else:
         slots = [i for i, ch in enumerate(pattern) if ch in "0#?"]
-        affixes = (pattern[: slots[0]] + pattern[slots[-1] + 1 :]) if slots else pattern
-        literals = {ch for ch in affixes if ch not in _NUMBER_KEEP and ch not in '"\\'}
-        stripped = text.translate({ord(ch): None for ch in literals | {","}})
-        n = _plain_number(stripped.strip().replace("%", ""))
+        first, last = (slots[0], slots[-1] + 1) if slots else (0, len(pattern))
+        prefix, suffix = (re.sub(r'["\\]', "", pattern[:first]), re.sub(r'["\\]', "", pattern[last:]))
+        body = text.removeprefix(prefix).removesuffix(suffix).strip()
+        if "," in pattern[first:last]:  # grouping separators are only dropped when the pattern has them
+            body = body.replace(",", "")
+        n = _plain_number(body)
         if n is not None:
             return n / 100 if "%" in pattern else n
     s = re.sub(r"[^0-9,.\-+eE%]", "", text)  # drops spaces, NBSP, narrow NBSP, currency symbols
