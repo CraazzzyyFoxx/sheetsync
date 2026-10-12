@@ -14,10 +14,9 @@ items marked **[default]** were chosen while writing the spec and are open to ve
 | Read-only public CSV source | Cell styling other than number formats (colour, font, borders) |
 | Number/date display formats per column (§5.1) | Spreadsheet-level `locale` / `timeZone` changes |
 
-- Separate repo `E:/projects/sheetsync`, package/import name `sheetsync`, `requires-python >=3.12`.
+- Separate repo, package/import name `sheetsync`, `requires-python >=3.12`.
 - Tooling: uv, pytest, ruff. Distributed by git tag (`v0.1.0`).
 - Runtime deps: `httpx`, `google-auth`, `tenacity`, `pydantic>=2` **[default]** (schema validation + `from_model`).
-- First consumer: dudeduck (migration in §10). anak-tournaments migrates later, out of this scope.
 
 ## 2. Sync model: per-column ownership
 
@@ -116,7 +115,7 @@ class Codec(Protocol[T]):
 - Built-ins: `str`, `int`, `float` (decimal comma accepted), `bool` (`true_values`), `date`, `datetime`, `enum`
   (`valid_values` or `value_map`, bidirectional), `list` (`separator`, item codec).
 - Round-trip invariant: `decode(encode(v)) == v` for every built-in on the API path. Tests enforce it.
-- `0`, `0.0`, `False` encode as themselves (fixes dudeduck's falsy-to-empty bug).
+- `0`, `0.0`, `False` encode as themselves, never as an empty cell.
 - `datetime`: the wire value is a serial number (epoch 1899-12-30) in `ctx.tz`. Decode returns an aware datetime;
   encode requires an aware datetime (naive input → `ValueError`). Text input is parsed per §5.1. Wire precision is
   milliseconds (both directions round to the millisecond).
@@ -299,31 +298,7 @@ class AsyncLock(Protocol):
 ```
 Ships `NullLock` (default) and `AsyncioLock` (single process). Distributed locks live in the consumer.
 
-## 10. dudeduck migration
-
-Delete:
-- `backend/src/services/sheets/` gspread code: `service.py` transport and parsing, dynamic `create_model` with `_CACHE`,
-  `find`-based identity
-- the one-time import `sync_orders` / `sync_data_from` / `get_create_payload_from_order_sheets` / `boosters_from_order_sync`
-- `publish_sync_user`, `publish_sync_data`, `sync_user_to_sheets`, `bulk_sync_orders_to_sheets`, `bulk_create_row_data`
-- `errors.GoogleSheetsParserError`, triple `allowed_types`, `order_sheet_parse` table and its CRUD views
-- the `gspread` dependency
-
-Add:
-- `sheet_table(id, kind UNIQUE, spreadsheet_id, gid, schema_json, created_at, updated_at)`; configs entered by hand
-  (seed script / SQL); no conversion from the old table.
-- `sheet_row_state(sheet_table_id FK, key, row_number NULL, app_hash, updated_at, PK(sheet_table_id, key))` **[default]**.
-- `order → record dict` mapper (keeps booster/screenshot string formatting, app-side).
-- Column ownership: every `CreateUpdateOrderSheets` field is `app`; former `generated` columns are `skip`; nothing is `sheet` in v1.
-- Event push: the `sheets.sync_order` handler → `table.push` / `table.delete` under a redis-py `Lock`
-  `sheetsync:{spreadsheet_id}:{gid}` (timeout 60s, blocking 10s). If the lock times out, the push fails and reconcile repairs it.
-- Reconcile: aiocron every 10 min in the worker: lock → `read` → `plan_sync` → `apply` → persist states,
-  log `drift`/`errors`/`warnings`/`orphans`/`duplicates`.
-- Admin UI: update the TS types only; no editor.
-- Display formats live in `schema_json.formats` / per-column `format`; delete `config.app.datetime_format_sheets`.
-  The first reconcile applies them to existing rows.
-
-## 11. Tests
+## 10. Tests
 
 - Unit: codecs (round-trip, text paths, falsy values, tz), Sheets-pattern → strptime translation (`mm` minutes vs
   months, AM/PM), fallback with warning, ambiguous fallback → error, schema validation and header resolution,
@@ -333,10 +308,9 @@ Add:
 - Integration (opt-in, `SHEETSYNC_IT=1`, `SHEETSYNC_SA_JSON`, `SHEETSYNC_SPREADSHEET_ID`): create → update → drift →
   delete round trip on a real test sheet.
 
-## 12. Implementation order
+## 11. Implementation order
 
 1. Repo skeleton, errors, codecs, schema (+ tests)
 2. `plan_sync` (+ tests)
 3. `SheetsClient` + `Table` + `PublicCsvTable` (+ MockTransport tests)
 4. Metadata spike script + integration test; README with the ceiling and spike findings
-5. dudeduck migration (§10)
