@@ -1,5 +1,7 @@
 import asyncio
 import random
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +21,7 @@ BASE_URL = "https://sheets.googleapis.com/v4/spreadsheets/"
 SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 MAX_WAIT = 32.0
+PRE_SEND_ERRORS = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)  # the request never left
 
 
 class _Retryable(Exception):
@@ -42,10 +45,19 @@ def retry_wait(backoff: float) -> Callable[[RetryCallState], float]:
 
 
 def _retry_after(response: httpx.Response) -> float | None:
-    try:
-        return max(0.0, float(response.headers["Retry-After"]))
-    except (KeyError, ValueError):  # ponytail: HTTP-date Retry-After ignored, falls back to backoff
+    """`Retry-After` in seconds; accepts both the delta-seconds and the HTTP-date form."""
+    value = response.headers.get("Retry-After")
+    if value is None:
         return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, (when.replace(tzinfo=when.tzinfo or UTC) - datetime.now(UTC)).total_seconds())
 
 
 class SheetsClient:
@@ -107,7 +119,10 @@ class SheetsClient:
         return await self._request("POST", f"{spreadsheet_id}/values:batchUpdateByDataFilter", json=body)
 
     async def batch_update(self, spreadsheet_id: str, requests: list[dict]) -> dict:
-        return await self._request("POST", f"{spreadsheet_id}:batchUpdate", json={"requests": requests})
+        # structural requests are positional, not idempotent: replaying one after a lost response corrupts the sheet
+        return await self._request(
+            "POST", f"{spreadsheet_id}:batchUpdate", json={"requests": requests}, idempotent=False
+        )
 
     async def search_developer_metadata(self, spreadsheet_id: str, data_filters: list[dict]) -> dict:
         return await self._request(
@@ -120,20 +135,24 @@ class SheetsClient:
                 await asyncio.to_thread(self._credentials.refresh, google.auth.transport.requests.Request())
         return self._credentials.token
 
-    async def _attempt(self, method: str, url: str, params: Any, json: Any) -> dict:
+    async def _attempt(self, method: str, url: str, params: Any, json: Any, idempotent: bool) -> dict:
         headers = {"Authorization": f"Bearer {await self._token()}"}
         try:
             response = await self._http.request(method, url, params=params, json=json, headers=headers)
         except httpx.TransportError as exc:
-            raise _Retryable(ApiError(0, str(exc))) from exc
+            if idempotent or isinstance(exc, PRE_SEND_ERRORS):
+                raise _Retryable(ApiError(0, str(exc))) from exc
+            raise ApiError(0, str(exc)) from exc
         if response.is_success:
             return response.json()
         error = ApiError(response.status_code, response.text)
-        if response.status_code in RETRY_STATUSES:
+        if response.status_code in RETRY_STATUSES and (idempotent or response.status_code == 429):
             raise _Retryable(error, _retry_after(response))
         raise error
 
-    async def _request(self, method: str, path: str, *, params: Any = None, json: Any = None) -> dict:
+    async def _request(
+        self, method: str, path: str, *, params: Any = None, json: Any = None, idempotent: bool = True
+    ) -> dict:
         retrying = AsyncRetrying(
             retry=retry_if_exception_type(_Retryable),
             stop=stop_after_attempt(self._max_attempts),
@@ -141,6 +160,6 @@ class SheetsClient:
             reraise=True,
         )
         try:
-            return await retrying(self._attempt, method, BASE_URL + path, params, json)
+            return await retrying(self._attempt, method, BASE_URL + path, params, json, idempotent)
         except _Retryable as exc:
             raise exc.error from exc

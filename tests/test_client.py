@@ -1,5 +1,7 @@
 import asyncio
 import json
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from types import SimpleNamespace
 
 import httpx
@@ -7,7 +9,7 @@ import pytest
 from tenacity import RetryCallState
 
 from sheetsync import ApiError, SheetsClient
-from sheetsync.client import BASE_URL, _Retryable, retry_wait
+from sheetsync.client import BASE_URL, _retry_after, _Retryable, retry_wait
 
 SID = "sheet123"
 
@@ -186,3 +188,62 @@ def test_requires_exactly_one_credential_source():
         SheetsClient()
     with pytest.raises(ValueError):
         SheetsClient({"a": 1}, credentials=FakeCredentials())
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [httpx.ReadTimeout("lost"), httpx.ReadError("lost"), httpx.RemoteProtocolError("lost"), httpx.Response(503)],
+)
+async def test_batch_update_not_replayed_after_ambiguous_failure(failure):
+    def handler(request):
+        if isinstance(failure, Exception):
+            raise failure
+        return failure
+
+    client, seen = make_client(handler)
+    async with client:
+        with pytest.raises(ApiError):
+            await client.batch_update(SID, [{"deleteDimension": {}}])
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("failure", [httpx.ConnectError("x"), httpx.ConnectTimeout("x"), httpx.PoolTimeout("x")])
+async def test_batch_update_retries_pre_send_errors_and_429(failure):
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            raise failure
+        return httpx.Response(429) if len(calls) == 2 else httpx.Response(200, json={"ok": 1})
+
+    client, _ = make_client(handler)
+    async with client:
+        assert await client.batch_update(SID, [{"addSheet": {}}]) == {"ok": 1}
+    assert len(calls) == 3
+
+
+async def test_value_writes_keep_full_retry_policy():
+    responses = iter([httpx.Response(503), httpx.ReadTimeout("lost"), httpx.Response(200, json={"ok": 1})])
+
+    def handler(request):
+        r = next(responses)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+    client, seen = make_client(handler)
+    async with client:
+        assert await client.values_batch_update(SID, []) == {"ok": 1}
+    assert len(seen) == 3
+
+
+def test_retry_after_http_date():
+    when = datetime.now(UTC) + timedelta(seconds=30)
+    seconds = _retry_after(httpx.Response(429, headers={"Retry-After": format_datetime(when, usegmt=True)}))
+    assert seconds is not None
+    assert 25 <= seconds <= 30
+    past = format_datetime(datetime.now(UTC) - timedelta(hours=1), usegmt=True)
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": past})) == 0.0
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": "garbage"})) is None
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": "12"})) == 12.0
