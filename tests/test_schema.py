@@ -140,6 +140,13 @@ def test_resolve_missing_skip_column_omitted():
     assert resolve_columns(s, ["Name", "Notes"]) == {"a": 0, "b": 1}
 
 
+def test_resolve_skip_column_pin_mismatch_is_error():
+    s = schema(col("a", "Name"), Column(field="b", header="Notes", index=0, owner=Owner.SKIP))
+    with pytest.raises(SchemaError, match="Notes"):
+        resolve_columns(s, ["Name", "Notes"])  # header exists, but not at the pinned index
+    assert resolve_columns(s, ["Name", "Other"]) == {"a": 0}  # fully missing header is tolerated
+
+
 def test_resolve_none_header_cell():
     assert resolve_columns(schema(col("a", "Name")), [None, 5, "Name"]) == {"a": 2}
 
@@ -188,7 +195,7 @@ def test_decode_required_empty_and_padded():
 def test_decode_collects_all_errors_per_row():
     s = schema(col("a", codec="int"), col("b", codec="int"), col("c", codec="int"))
     values, errors, _ = decode_row(s, {"a": 0, "b": 1, "c": 2}, ["x", 2, "y"], 4, DEFAULT_CODECS, TZ)
-    assert values == {"b": 2}
+    assert values == {"a": None, "b": 2, "c": None}
     assert [(e.field, e.raw) for e in errors] == [("a", "x"), ("c", "y")]
     assert all(e.row_number == 4 and e.message for e in errors)
 

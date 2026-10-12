@@ -146,20 +146,19 @@ def resolve_columns(schema: TableSchema, header_cells: Sequence[Cell]) -> dict[s
             result[c.field] = c.index
             continue
         want = _norm(c.header)
+        hits = [i for i, h in enumerate(headers) if h == want]
         if c.index is not None:
-            found = c.index if c.index < len(headers) and headers[c.index] == want else None
-        else:
-            hits = [i for i, h in enumerate(headers) if h == want]
-            if len(hits) > 1:
-                raise SchemaError(
-                    f"column {c.field!r}: header {c.header!r} appears {len(hits)} times; pin it with index"
-                )
-            found = hits[0] if hits else None
-        if found is not None:
-            result[c.field] = found
+            if c.index in hits:
+                result[c.field] = c.index
+            elif hits or c.owner != Owner.SKIP:  # skip columns tolerate only a fully missing header
+                raise SchemaError(f"column {c.field!r}: header {c.header!r} not found at index {c.index}")
+            continue
+        if len(hits) > 1:
+            raise SchemaError(f"column {c.field!r}: header {c.header!r} appears {len(hits)} times; pin it with index")
+        if hits:
+            result[c.field] = hits[0]
         elif c.owner != Owner.SKIP:
-            where = f" at index {c.index}" if c.index is not None else ""
-            raise SchemaError(f"column {c.field!r}: header {c.header!r} not found{where}")
+            raise SchemaError(f"column {c.field!r}: header {c.header!r} not found")
     return result
 
 
@@ -184,7 +183,7 @@ def decode_row(
     codecs: Mapping[str, Codec[Any]],
     tz: ZoneInfo,
 ) -> tuple[dict[str, Any], list[RowError], list[RowWarning]]:
-    """Decode one row into a flat dotted-field dict. Failed fields are left out of the dict."""
+    """Decode one row into a flat dotted-field dict. A field that failed to decode maps to None beside its RowError."""
     values: dict[str, Any] = {}
     errors: list[RowError] = []
     warnings: list[RowWarning] = []
@@ -206,6 +205,7 @@ def decode_row(
         try:
             values[c.field] = codecs[c.codec].decode(raw, ctx)
         except (ValueError, TypeError) as e:
+            values[c.field] = None
             errors.append(RowError(row_number, c.field, raw, str(e)))
     return values, errors, warnings
 
