@@ -13,6 +13,7 @@ from sheetsync.codecs import (
     NumberFormat,
     StrCodec,
     from_serial,
+    sheets_pattern_to_strptime,
     to_serial,
 )
 from sheetsync.errors import (
@@ -53,5 +54,6 @@ __all__ = [
     "SourceError",
     "StrCodec",
     "from_serial",
+    "sheets_pattern_to_strptime",
     "to_serial",
 ]

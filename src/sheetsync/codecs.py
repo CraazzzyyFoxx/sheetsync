@@ -1,3 +1,4 @@
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -53,19 +54,127 @@ def from_serial(x: float, tz: ZoneInfo) -> datetime:
         raise ValueError(f"serial {x} is out of the supported date range") from None
 
 
-# Task 2 plugs the formatted-text parsers in here; for now only canonical text is accepted.
+_TOKEN = re.compile(r'"([^"]*)"|\\(.)|(\[[^\]]*\])|(\.0+)|(AM/PM)|(y+|m+|d+|h+|s+)|(.)', re.IGNORECASE | re.DOTALL)
+
+
+def sheets_pattern_to_strptime(pattern: str) -> str:
+    """Translate a Sheets date/time pattern to a strptime format; ValueError for locale-dependent/unsupported tokens."""
+    parts: list[tuple[str, str]] = []  # (kind, text): kind is a date/time letter, "p" for AM/PM, "" for a literal
+    for m in _TOKEN.finditer(pattern):
+        quoted, escaped, bracket, frac, ampm, run, other = m.groups()
+        if bracket or frac:
+            raise ValueError(f"unsupported pattern token {m.group()!r} in {pattern!r}")
+        if ampm:
+            parts.append(("p", ""))
+        elif run:
+            kind = run[0].lower()
+            if len(run) > 2 and kind != "y" or kind == "y" and len(run) not in (2, 4):
+                raise ValueError(f"unsupported pattern token {run!r} in {pattern!r}")
+            parts.append((kind, run))
+        else:
+            parts.append(("", next(g for g in (quoted, escaped, other) if g is not None)))
+    twelve_hour = any(kind == "p" for kind, _ in parts)
+    clock = [i for i, (kind, _) in enumerate(parts) if kind in ("y", "m", "d", "h", "s")]
+    out: list[str] = []
+    for i, (kind, text) in enumerate(parts):
+        if kind == "":
+            out.append(text.replace("%", "%%"))
+        elif kind == "p":
+            out.append("%p")
+        elif kind == "y":
+            out.append("%Y" if len(text) == 4 else "%y")
+        elif kind == "m":
+            pos = clock.index(i)
+            prev_kind = parts[clock[pos - 1]][0] if pos > 0 else ""
+            next_kind = parts[clock[pos + 1]][0] if pos + 1 < len(clock) else ""
+            out.append("%M" if prev_kind == "h" or next_kind == "s" else "%m")
+        else:
+            out.append({"d": "%d", "h": "%I" if twelve_hour else "%H", "s": "%S"}[kind])
+    return "".join(out)
+
+
+_ISO = "ISO 8601"
+_DATE_FALLBACKS = (
+    ("dd.mm.yyyy", "%d.%m.%Y"),
+    ("dd/mm/yyyy", "%d/%m/%Y"),
+    ("mm/dd/yyyy", "%m/%d/%Y"),
+    ("yyyy-mm-dd", "%Y-%m-%d"),
+)
+_TIME_SUFFIXES = (("", ""), (" hh:mm", " %H:%M"), (" hh:mm:ss", " %H:%M:%S"))
+
+
 def _parse_datetime_text(text: str, ctx: Ctx) -> datetime:
+    text = text.strip()
+    pattern = ctx.format.pattern if ctx.format else None
+    if pattern:
+        fmt = sheets_pattern_to_strptime(pattern)
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            pass
+    found: dict[datetime, str] = {}  # distinct value -> label of the first fallback that produced it
     try:
-        return datetime.fromisoformat(text.strip())
+        iso = datetime.fromisoformat(text)
     except ValueError:
-        raise ValueError(f"cannot parse {text!r} as a date/time") from None
+        pass
+    else:
+        if not pattern:
+            return iso  # canonical text is silent only when the column has no pattern
+        found[iso] = _ISO
+    for label, fmt in _DATE_FALLBACKS:
+        for suffix_label, suffix_fmt in _TIME_SUFFIXES:
+            try:
+                found.setdefault(datetime.strptime(text, fmt + suffix_fmt), label + suffix_label)
+            except ValueError:
+                pass
+    if not found:
+        raise ValueError(f"cannot parse {text!r} as a date/time")
+    if len(found) > 1:
+        raise ValueError(f"ambiguous date {text!r}: matches {' and '.join(found.values())}")
+    ((value, label),) = found.items()
+    ctx.warn(label)
+    return value
+
+
+_NUMBER = re.compile(r"[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+_NUMBER_KEEP = "0#?,.%Ee+-"
+
+
+def _plain_number(s: str) -> float | None:
+    return float(s) if _NUMBER.fullmatch(s) else None
 
 
 def _parse_number_text(text: str, ctx: Ctx) -> float:
-    try:
-        return float(text)
-    except ValueError:
-        raise ValueError(f"cannot parse {text!r} as a number") from None
+    text = text.strip()
+    pattern = ctx.format.pattern if ctx.format else None
+    if not pattern:
+        try:
+            return float(text)
+        except ValueError:
+            pass
+    else:
+        slots = [i for i, ch in enumerate(pattern) if ch in "0#?"]
+        affixes = (pattern[: slots[0]] + pattern[slots[-1] + 1 :]) if slots else pattern
+        literals = {ch for ch in affixes if ch not in _NUMBER_KEEP and ch not in '"\\'}
+        stripped = text.translate({ord(ch): None for ch in literals | {","}})
+        n = _plain_number(stripped.strip().replace("%", ""))
+        if n is not None:
+            return n / 100 if "%" in pattern else n
+    s = re.sub(r"[^0-9,.\-+eE%]", "", text)  # drops spaces, NBSP, narrow NBSP, currency symbols
+    percent = s.endswith("%")
+    s = s.removesuffix("%")
+    if "," in s and "." in s:
+        decimal = "," if s.rfind(",") > s.rfind(".") else "."
+        s = s.replace("." if decimal == "," else ",", "").replace(",", ".")
+    elif s.count(",") == 1:
+        if len(re.match(r"\d*", s.partition(",")[2])[0]) == 3:
+            raise ValueError(f"ambiguous number {text!r}: ',' may be a thousands or a decimal separator")
+        s = s.replace(",", ".")
+    n = _plain_number(s)
+    if n is None:
+        raise ValueError(f"cannot parse {text!r} as a number")
+    ctx.warn("number fallback")
+    return n / 100 if percent else n
 
 
 def _text(raw: Cell) -> str:
