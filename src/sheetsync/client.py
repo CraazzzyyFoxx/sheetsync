@@ -1,8 +1,8 @@
 import asyncio
 import random
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 import google.auth.transport.requests

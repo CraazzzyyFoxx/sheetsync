@@ -160,9 +160,9 @@ def resolve_columns(schema: TableSchema, header_cells: Sequence[Cell]) -> dict[s
         elif c.owner != Owner.SKIP:
             raise SchemaError(f"column {c.field!r}: header {c.header!r} not found")
     by_index: dict[int, str] = {}
-    for field, index in result.items():
-        if (other := by_index.setdefault(index, field)) != field:
-            raise SchemaError(f"columns {other!r} and {field!r} both resolve to column index {index}")
+    for name, index in result.items():
+        if (other := by_index.setdefault(index, name)) != name:
+            raise SchemaError(f"columns {other!r} and {name!r} both resolve to column index {index}")
     return result
 
 

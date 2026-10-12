@@ -118,7 +118,10 @@ class Codec(Protocol[T]):
 - Round-trip invariant: `decode(encode(v)) == v` for every built-in on the API path. Tests enforce it.
 - `0`, `0.0`, `False` encode as themselves (fixes dudeduck's falsy-to-empty bug).
 - `datetime`: the wire value is a serial number (epoch 1899-12-30) in `ctx.tz`. Decode returns an aware datetime;
-  encode requires an aware datetime (naive input → `ValueError`). Text input is parsed per §5.1.
+  encode requires an aware datetime (naive input → `ValueError`). Text input is parsed per §5.1. Wire precision is
+  milliseconds (both directions round to the millisecond).
+- `int` encodes only `abs(value) <= 2**53` (the largest range a float cell holds exactly); larger → `ValueError`
+  (use a `str` column for large identifiers).
 - Empty cell (`None` / `""` / whitespace) → `None` before the codec runs; `required` columns produce a `RowError`.
 
 ### 5.1 Display formats
@@ -177,11 +180,15 @@ class NumberFormat(BaseModel):
 - Auth: `google.oauth2.service_account.Credentials` from a dict, scope `spreadsheets`. Token refresh is synchronous
   in google-auth, so it runs through `asyncio.to_thread` only when the token is expired.
 - Retry (tenacity): 429, 500, 502, 503, 504 and `httpx.TransportError`. Exponential backoff with jitter, honours
-  `Retry-After`, 5 attempts, then `ApiError`.
+  `Retry-After` (delta-seconds or HTTP-date), 5 attempts, then `ApiError`.
+- Structural `batchUpdate` is not idempotent (positional `deleteDimension`, duplicate `createDeveloperMetadata`), so it
+  retries only on 429 and on transport errors raised before the request is sent (`ConnectError`, `ConnectTimeout`,
+  `PoolTimeout`). Any other failure (read timeout, dropped connection, 5xx) is an immediate `ApiError`; the caller
+  re-reads and re-plans. Reads and `values:batchUpdate[ByDataFilter]` (idempotent) keep the full policy.
 - Read options: `valueRenderOption=UNFORMATTED_VALUE`, `dateTimeRenderOption=SERIAL_NUMBER`.
 - Write options: `valueInputOption=RAW`; `null` in a row array means "skip this cell" (this is how
   `sheet`/`skip` columns are left untouched).
-- The tab title, grid size and timezone come from one `spreadsheets.get` (fields-masked), cached per `Table` for its lifetime **[default]**.
+- The tab title, grid size and timezone come from one `spreadsheets.get` (fields-masked), fetched on every `read()` (tabs get renamed, rows get added, `appendDimension` changes the grid size).
 
 ## 7. Identity
 
@@ -272,6 +279,9 @@ await table.delete(key, state, lock=lock)
 ```
 
 - `app_hash` = sha256 over canonical JSON of the encoded app-owned cells in column order, truncated to 16 hex characters **[default]**.
+- `ApplyResult.states` covers only the snapshot's rows and the creates; it is not a full replacement of the persisted
+  states. The app merges (`states.update(result.states)`, drop `result.removed`): states of `missing_in_sheet` and
+  duplicate keys are absent from it and must be kept, or the next reconcile re-creates those rows.
 - Detecting drift: the hash of the current sheet app-owned cells ≠ `state.app_hash`.
 - `apply` batches all value writes into one `values:batchUpdate`/`…ByDataFilter` call and all structural changes into one
   `batchUpdate` (deletes bottom-up).

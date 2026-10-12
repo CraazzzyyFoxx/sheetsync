@@ -46,12 +46,18 @@ async with SheetsClient(service_account_info) as client:  # service account JSON
         plan = plan_sync(schema, snap, records, states)
         # plan.creates / updates / deletes / pulls / drift / missing_in_sheet / orphans
         result = await table.apply(plan)  # ApplyResult(states, removed)
-    states = result.states  # persist these; result.removed are the keys of plan.deletes
+    states.update(result.states)  # merge: result.states is not a full replacement
+    for key in result.removed:  # the keys of plan.deletes
+        states.pop(key, None)
 
     # event push: single upsert / delete, the lock is held inside
     states["o-1"] = await table.push("o-1", records["o-1"], lock=lock)  # returns the new RowState
     await table.delete("o-1", states.pop("o-1"), lock=lock)
 ```
+
+`ApplyResult.states` covers only the rows in the snapshot plus the creates, so it is not a full replacement: states of
+`missing_in_sheet` and duplicate keys are absent from it, and replacing `states` wholesale would make the next reconcile
+re-create those rows.
 
 `read(strict=True)` raises `RowDecodeError` on the first bad row instead of collecting `snap.errors`.
 `apply(plan, repair_formats=False)` skips the per-column format repair (`push` and `delete` always skip it).
