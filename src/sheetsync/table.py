@@ -87,13 +87,12 @@ class Table:
         self.gid = gid
         self.schema = schema
         self.codecs = codecs
-        self.title: str | None = None  # tab title, tz and grid size: filled by the first meta fetch, then cached
+        self.title: str | None = None  # tab title, tz and grid size: latest values from `fetch_meta`
         self.tz: ZoneInfo | None = None
         self.grid_rows = 0
 
-    async def ensure_meta(self) -> None:
-        if self.title is not None:
-            return
+    async def fetch_meta(self) -> None:
+        """Refresh title, tz and grid size (tabs get renamed, rows get added); called by every `read()`."""
         meta = await self.client.get_spreadsheet(self.spreadsheet_id, META_FIELDS)
         for sheet in meta.get("sheets", []):
             props = sheet["properties"]
@@ -105,7 +104,7 @@ class Table:
         raise SchemaError(f"spreadsheet {self.spreadsheet_id!r} has no tab with gid {self.gid}")
 
     async def read(self, *, strict: bool = False) -> Snapshot:
-        await self.ensure_meta()
+        await self.fetch_meta()
         assert self.title is not None and self.tz is not None
         quoted = "'" + self.title.replace("'", "''") + "'"
         values = await self.client.values_batch_get(self.spreadsheet_id, [quoted])
@@ -145,7 +144,7 @@ class PublicCsvTable:
                     sheets_pattern_to_strptime(fmt.pattern)
                 except ValueError as e:
                     raise SchemaError(f"column {c.field!r}: {e}") from e
-        if not (sheet_id := re.search(r"/spreadsheets/d/([^/]+)", url)):
+        if not (sheet_id := re.search(r"/spreadsheets/d/([^/?#]+)", url)):
             raise SourceError(f"not a Google Sheets URL: {url!r}")
         gid = re.search(r"[?&#]gid=(\d+)", url)
         self.export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id[1]}/export?format=csv" + (

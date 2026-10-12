@@ -161,7 +161,7 @@ def make_client(values=VALUES):
     return SheetsClient(credentials=FakeCredentials(), transport=httpx.MockTransport(handler)), seen
 
 
-async def test_table_read_sequence_meta_cache_and_quoting():
+async def test_table_read_sequence_meta_refetch_and_quoting():
     client, seen = make_client()
     async with client:
         table = client.table(SID, 42, make_schema())
@@ -170,8 +170,9 @@ async def test_table_read_sequence_meta_cache_and_quoting():
         await table.read()
     assert [r.url.path.rsplit("/", 1)[-1] for r in seen] == [
         SID,
-        f"{SID}/values:batchGet".rsplit("/", 1)[-1],
+        "values:batchGet",
         "developerMetadata:search",
+        SID,
         "values:batchGet",
         "developerMetadata:search",
     ]
@@ -257,6 +258,13 @@ async def test_csv_happy_path_with_fallback_warning():
     assert snapshot.rows["b"].values["day"] is None
     assert [(w.row_number, w.field, w.matched_format) for w in snapshot.warnings] == [(2, "day", "dd.mm.yyyy")]
     assert (snapshot.grid_rows, snapshot.last_data_row, snapshot.tz) == (3, 3, TZ)
+
+
+@pytest.mark.parametrize("suffix", ["?usp=sharing", "#gid=123", "/edit"])
+async def test_csv_id_stops_at_query_fragment_and_slash(suffix):
+    table, seen = csv_table(csv_response("ID,Day\n"), url=f"https://docs.google.com/spreadsheets/d/{SID}{suffix}")
+    await table.read()
+    assert seen[0].url.path == f"/spreadsheets/d/{SID}/export"
 
 
 async def test_csv_url_without_gid_and_query_gid():
