@@ -54,12 +54,12 @@ def build_snapshot(
     codecs: Mapping[str, Codec[Any]],
     tz: ZoneInfo,
     rows: Sequence[Sequence[Cell]],
-    tags: Mapping[int, str],
+    tags: Mapping[int, list[str]],
     grid_rows: int,
     *,
     strict: bool = False,
 ) -> Snapshot:
-    """Decode a whole tab (`rows[0]` is sheet row 1; `tags` maps row number -> key) into a Snapshot."""
+    """Decode a whole tab (`rows[0]` is sheet row 1; `tags` maps row number -> its tagged keys) into a Snapshot."""
     header = rows[schema.header_row - 1] if schema.header_row <= len(rows) else []
     indexes = resolve_columns(schema, header)
     data_indexes = [indexes[c.field] for c in schema.columns if c.owner != Owner.SKIP and c.field in indexes]
@@ -68,10 +68,13 @@ def build_snapshot(
     last_data_row = first - 1
     errors, warnings, orphans = [], [], []
     by_key: dict[str, list[Row]] = {}
+    conflicted: set[str] = set()  # keys on a row that carries several of our tags: never safe to address
 
-    for row_number in range(first, len(rows) + 1):
-        cells = rows[row_number - 1]
-        if all(_is_empty(cells[i]) for i in data_indexes if i < len(cells)):
+    # a tagged row is a data row even when its synced cells are empty or it is past the end of `values`
+    for row_number in range(first, max([len(rows), *tags]) + 1):
+        cells = rows[row_number - 1] if row_number <= len(rows) else []
+        row_tags = tags.get(row_number, [])
+        if not row_tags and all(_is_empty(cells[i]) for i in data_indexes if i < len(cells)):
             continue
         last_data_row = row_number
         values, row_errors, row_warnings = decode_row(schema, indexes, cells, row_number, codecs, tz)
@@ -79,23 +82,24 @@ def build_snapshot(
             raise RowDecodeError(row_errors[0])
         errors += row_errors
         warnings += row_warnings
-        key, tagged = tags.get(row_number), True
-        if key is None:
-            key, tagged = None, False
+        if len(row_tags) > 1:
+            conflicted.update(row_tags)
+        keys, tagged = row_tags, bool(row_tags)
+        if not keys:
             decoded = values.get(schema.key_field) if keyed_by_column else None
-            if decoded is not None:  # an empty or undecodable key cell decodes to None
-                key = str(decoded)
-        if key:
+            if decoded is not None and (key := str(decoded)):  # an empty or undecodable key cell decodes to None
+                keys = [key]
+        for key in keys:
             by_key.setdefault(key, []).append(Row(key, row_number, values, tuple(cells), tagged))
-        else:
+        if not keys:
             orphans.append(row_number)
 
     return Snapshot(
-        rows={k: v[0] for k, v in by_key.items() if len(v) == 1},
+        rows={k: v[0] for k, v in by_key.items() if len(v) == 1 and k not in conflicted},
         errors=errors,
         warnings=warnings,
         orphans=orphans,
-        duplicates={k: [r.row_number for r in v] for k, v in by_key.items() if len(v) > 1},
+        duplicates={k: [r.row_number for r in v] for k, v in by_key.items() if len(v) > 1 or k in conflicted},
         tz=tz,
         indexes=indexes,
         last_data_row=last_data_row,
@@ -140,7 +144,7 @@ class Table:
         quoted = _quote(self.title)
         values = await self.client.values_batch_get(self.spreadsheet_id, [quoted])
         rows = values["valueRanges"][0].get("values", [])
-        tags: dict[int, str] = {}
+        tags: dict[int, list[str]] = {}
         if "metadata" in self.schema.identity:
             lookup = {"locationType": "ROW", "metadataLocation": {"sheetId": self.gid}}
             found = await self.client.search_developer_metadata(
@@ -151,7 +155,7 @@ class Table:
                 meta = match["developerMetadata"]
                 if meta["metadataKey"].startswith(prefix):
                     row_number = meta["location"]["dimensionRange"]["startIndex"] + 1
-                    tags[row_number] = meta["metadataKey"][len(prefix) :]
+                    tags.setdefault(row_number, []).append(meta["metadataKey"][len(prefix) :])
         return build_snapshot(self.schema, self.codecs, self.tz, rows, tags, self.grid_rows, strict=strict)
 
     async def apply(self, plan: Plan, *, repair_formats: bool = True) -> ApplyResult:

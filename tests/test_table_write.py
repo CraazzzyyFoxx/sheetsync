@@ -64,7 +64,8 @@ def world(rows, *, tags=None, grid_rows=100, **schema_kw):
     found = {
         "matchedDeveloperMetadata": [
             {"developerMetadata": {"metadataKey": f"k:{k}", "location": {"dimensionRange": {"startIndex": r - 1}}}}
-            for r, k in (tags or {}).items()
+            for r, v in (tags or {}).items()
+            for k in ([v] if isinstance(v, str) else v)
         ]
     }
     writes: list[tuple[str, dict]] = []
@@ -106,6 +107,32 @@ def lookup(key):
 
 def kinds(batch):
     return [next(iter(r)) for r in batch["requests"]]
+
+
+# --- tag edge cases --------------------------------------------------------------------------------------------------
+
+
+async def test_multi_tag_row_is_never_written_through_a_data_filter():
+    table, writes = world([sheet_row("a"), sheet_row("b")], tags={2: "a", 3: ["a", "b"]})
+    snap = await table.read()
+    assert snap.rows == {} and snap.duplicates == {"a": [2, 3], "b": [3]}
+    plan = plan_sync(table.schema, snap, {"a": rec("a", qty=9), "b": rec("b", qty=9)}, {})
+    assert (plan.creates, plan.updates) == ({}, {})
+    await table.apply(plan)
+    assert not any(path.startswith("/values:") for path, _ in writes)
+
+
+async def test_blank_tagged_rows_stay_data_rows():
+    table, writes = world([sheet_row("a"), ["", "", "", "", "", ""]], tags={2: "a", 3: "b", 4: "c"})
+    snap = await table.read()
+    assert snap.last_data_row == 4
+    states = {"b": RowState("b", 3, "x"), "c": RowState("c", 4, "x")}
+    plan = plan_sync(table.schema, snap, {"a": rec("a"), "b": rec("b"), "c": rec("c"), "d": rec("d")}, states)
+    assert plan.missing_in_sheet == []
+    assert list(plan.creates) == ["d"]
+    await table.apply(plan)
+    batch = next(body for path, body in writes if path == ":batchUpdate")
+    assert batch["requests"][0]["updateCells"]["start"]["rowIndex"] == 4  # new row 5, not on tagged row 3/4
 
 
 # --- value writes ----------------------------------------------------------------------------------------------------

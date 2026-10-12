@@ -56,7 +56,7 @@ def test_key_column_rows_and_raw():
 def test_tagged_orphan_and_duplicate():
     rows = [HEADER, ["a", 1, ""], ["", 2, ""], ["dup", 3, ""], ["dup", 4, ""], ["x", 5, ""]]
     # metadata mode: key only from tags; untagged rows are orphans
-    s = snap(rows, {2: "t-a", 5: "t-dup", 6: "t-dup"})
+    s = snap(rows, {2: ["t-a"], 5: ["t-dup"], 6: ["t-dup"]})
     assert list(s.rows) == ["t-a"]
     assert s.rows["t-a"].tagged is True
     assert s.orphans == [3, 4]
@@ -65,11 +65,29 @@ def test_tagged_orphan_and_duplicate():
 
 def test_key_column_orphan_dup_and_tag_priority():
     rows = [HEADER, ["a", 1, ""], ["", 2, ""], ["dup", 3, ""], ["dup", 4, ""], ["a2", 5, ""], ["bad", "oops", ""]]
-    s = snap(rows, {6: "a"}, identity="metadata+key_column")
+    s = snap(rows, {6: ["a"]}, identity="metadata+key_column")
     assert s.orphans == [3]
     assert s.duplicates == {"dup": [4, 5], "a": [2, 6]}  # tagged row 6 collides with untagged row 2 keyed "a"
     assert list(s.rows) == ["bad"]
     assert [(e.row_number, e.field) for e in s.errors] == [(7, "qty")]
+
+
+def test_row_with_several_tags_makes_every_key_a_duplicate():
+    rows = [HEADER, ["a", 1, ""], ["ab", 2, ""], ["c", 3, ""]]
+    s = snap(rows, {2: ["t-a"], 3: ["t-a", "t-b"], 4: ["t-c"]})
+    assert list(s.rows) == ["t-c"]
+    assert s.duplicates == {"t-a": [2, 3], "t-b": [3]}
+    assert s.orphans == []
+
+
+def test_tagged_empty_rows_are_data_rows_even_past_the_values():
+    rows = [HEADER, ["a", 1, ""], ["", "", ""]]
+    s = snap(rows, {2: ["t-a"], 3: ["t-b"], 4: ["t-c"], 1: ["t-header"]})  # row 4 is absent from `rows`
+    assert list(s.rows) == ["t-a", "t-b", "t-c"]
+    assert [s.rows[k].row_number for k in s.rows] == [2, 3, 4]
+    assert s.rows["t-c"].raw == ()
+    assert s.last_data_row == 4
+    assert s.orphans == []
 
 
 def test_key_decoded_via_codec_as_str():
