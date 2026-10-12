@@ -30,6 +30,7 @@ from sheetsync.errors import (
 from sheetsync.lock import AsyncioLock, AsyncLock, NullLock
 from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
 from sheetsync.schema import Col, Column, Owner, TableSchema
+from sheetsync.table import PublicCsvTable, Table, build_snapshot
 
 __all__ = [
     "DEFAULT_CODECS",
@@ -53,6 +54,7 @@ __all__ = [
     "NumberFormat",
     "Owner",
     "Plan",
+    "PublicCsvTable",
     "Row",
     "RowDecodeError",
     "RowError",
@@ -64,9 +66,11 @@ __all__ = [
     "Snapshot",
     "SourceError",
     "StrCodec",
+    "Table",
     "TableSchema",
     "app_cells",
     "app_hash",
+    "build_snapshot",
     "from_serial",
     "plan_sync",
     "sheets_pattern_to_strptime",
