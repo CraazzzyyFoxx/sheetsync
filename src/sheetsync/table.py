@@ -1,21 +1,52 @@
 import csv
 import io
 import re
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from itertools import groupby
 from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from sheetsync.codecs import DEFAULT_CODECS, Cell, Codec, sheets_pattern_to_strptime
-from sheetsync.errors import RowDecodeError, SchemaError, SourceError
-from sheetsync.plan import Row, Snapshot
-from sheetsync.schema import Owner, TableSchema, _is_empty, decode_row, resolve_columns
+from sheetsync.codecs import DEFAULT_CODECS, Cell, Codec, NumberFormat, sheets_pattern_to_strptime
+from sheetsync.errors import RowDecodeError, SchemaError, SheetsyncError, SourceError
+from sheetsync.lock import AsyncLock, NullLock
+from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
+from sheetsync.schema import Column, Owner, TableSchema, _is_empty, decode_row, encode_record, resolve_columns
 
 if TYPE_CHECKING:
     from sheetsync.client import SheetsClient
 
 META_FIELDS = "properties(timeZone,locale),sheets(properties(sheetId,title,gridProperties(rowCount,columnCount)))"
+
+
+def _quote(title: str) -> str:
+    return "'" + title.replace("'", "''") + "'"
+
+
+def _number_format(fmt: NumberFormat) -> dict[str, str]:
+    return {"type": fmt.type, **({"pattern": fmt.pattern} if fmt.pattern else {})}
+
+
+def _cell_data(value: Cell, fmt: NumberFormat | None) -> dict[str, Any]:
+    cell: dict[str, Any] = {}
+    if isinstance(value, bool):
+        cell["userEnteredValue"] = {"boolValue": value}
+    elif isinstance(value, int | float):
+        cell["userEnteredValue"] = {"numberValue": value}
+    elif value:  # "" / None: no userEnteredValue, which clears the cell
+        cell["userEnteredValue"] = {"stringValue": value}
+    if fmt:
+        cell["userEnteredFormat"] = {"numberFormat": _number_format(fmt)}
+    return cell
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    states: dict[str, RowState]  # every row left in the sheet (incl. creates), with its final row number
+    removed: list[str]  # keys of plan.deletes
 
 
 def build_snapshot(
@@ -106,7 +137,7 @@ class Table:
     async def read(self, *, strict: bool = False) -> Snapshot:
         await self.fetch_meta()
         assert self.title is not None and self.tz is not None
-        quoted = "'" + self.title.replace("'", "''") + "'"
+        quoted = _quote(self.title)
         values = await self.client.values_batch_get(self.spreadsheet_id, [quoted])
         rows = values["valueRanges"][0].get("values", [])
         tags: dict[int, str] = {}
@@ -122,6 +153,140 @@ class Table:
                     row_number = meta["location"]["dimensionRange"]["startIndex"] + 1
                     tags[row_number] = meta["metadataKey"][len(prefix) :]
         return build_snapshot(self.schema, self.codecs, self.tz, rows, tags, self.grid_rows, strict=strict)
+
+    async def apply(self, plan: Plan, *, repair_formats: bool = True) -> ApplyResult:
+        """Write a plan. The caller holds the lock across `read -> plan_sync -> apply`; the snapshot must be fresh."""
+        snap, schema, indexes, gid = plan.snapshot, self.schema, plan.snapshot.indexes, self.gid
+        assert self.title is not None, "apply() needs a preceding read()"
+        metadata = "metadata" in schema.identity
+        prefix = schema.metadata_prefix
+        app_cols = [(indexes[c.field], c) for c in schema.columns if c.owner == Owner.APP and c.field in indexes]
+        app_cols.sort(key=lambda p: p[0])
+
+        def fmt(col: Column) -> NumberFormat | None:
+            return schema.format_for(col)
+
+        def encode(record: Mapping) -> list[Cell]:
+            return encode_record(schema, indexes, record, self.codecs, snap.tz)
+
+        def lookup(key: str) -> dict[str, Any]:
+            return {
+                "developerMetadataLookup": {
+                    "metadataKey": prefix + key,
+                    "locationType": "ROW",
+                    "metadataLocation": {"sheetId": gid},
+                }
+            }
+
+        def runs(split_by_format: bool) -> list[list[tuple[int, Column]]]:
+            """Contiguous app columns; optionally split where "has a resolved format" changes."""
+            keyed = groupby(
+                enumerate(app_cols), lambda p: (p[1][0] - p[0], split_by_format and fmt(p[1][1]) is not None)
+            )
+            return [[col for _, col in run] for _, run in keyed]
+
+        def update_cells(row_index: int, run: list[tuple[int, Column]], rows: list[dict], fields: str) -> dict:
+            start = {"sheetId": gid, "rowIndex": row_index, "columnIndex": run[0][0]}
+            return {"updateCells": {"rows": rows, "start": start, "fields": fields}}
+
+        def row_range(row_number: int) -> dict[str, Any]:
+            return {"sheetId": gid, "dimension": "ROWS", "startIndex": row_number - 1, "endIndex": row_number}
+
+        # 1. value writes: updates keep whatever else is in the row (None cells are skipped by the API)
+        written: dict[str, list[Cell]] = {}
+        by_filter: list[dict] = []
+        by_range: list[dict] = []
+        for key, record in plan.updates.items():
+            row = snap.rows[key]
+            written[key] = cells = encode(record)
+            if metadata and row.tagged:
+                by_filter.append({"dataFilter": lookup(key), "majorDimension": "ROWS", "values": [cells]})
+            else:
+                by_range.append({"range": f"{_quote(self.title)}!A{row.row_number}", "values": [cells]})
+        if by_filter:
+            await self.client.values_batch_update_by_data_filter(self.spreadsheet_id, by_filter)
+        if by_range:
+            await self.client.values_batch_update(self.spreadsheet_id, by_range)
+
+        # 2. structural changes, one batchUpdate
+        requests: list[dict] = []
+        created = {key: encode(record) for key, record in plan.creates.items()}
+        first_new = snap.last_data_row + 1
+        if created and (shortfall := snap.last_data_row + len(created) - snap.grid_rows) > 0:
+            requests.append({"appendDimension": {"sheetId": gid, "dimension": "ROWS", "length": shortfall}})
+        for run in runs(split_by_format=True) if created else []:
+            formatted = fmt(run[0][1]) is not None
+            rows = [{"values": [_cell_data(cells[i], fmt(col)) for i, col in run]} for cells in created.values()]
+            fields = "userEnteredValue,userEnteredFormat.numberFormat" if formatted else "userEnteredValue"
+            requests.append(update_cells(first_new - 1, run, rows, fields))
+
+        gone = {key: snap.rows[key].row_number for key in plan.deletes if key in snap.rows}
+        if metadata:
+            tag_rows = {key: first_new + i for i, key in enumerate(created)}
+            # metadata+key_column recovery: rows found via the key column get tagged
+            tag_rows |= {k: r.row_number for k, r in snap.rows.items() if not r.tagged and k not in gone}
+            for key, row_number in tag_rows.items():
+                location = {"dimensionRange": row_range(row_number)}
+                tag = {"metadataKey": prefix + key, "location": location, "visibility": "DOCUMENT"}
+                requests.append({"createDeveloperMetadata": {"developerMetadata": tag}})
+
+        last_row = snap.last_data_row + len(created)
+        if repair_formats and last_row >= schema.first_data_row:
+            for idx, col in app_cols:
+                if (f := fmt(col)) is not None:
+                    grid_range = {
+                        "sheetId": gid,
+                        "startRowIndex": schema.first_data_row - 1,
+                        "endRowIndex": last_row,
+                        "startColumnIndex": idx,
+                        "endColumnIndex": idx + 1,
+                    }
+                    cell = {"userEnteredFormat": {"numberFormat": _number_format(f)}}
+                    requests.append(
+                        {"repeatCell": {"range": grid_range, "cell": cell, "fields": "userEnteredFormat.numberFormat"}}
+                    )
+
+        deleted_rows: list[int] = []
+        if schema.on_app_delete == "clear":
+            for key, row_number in gone.items():
+                for run in runs(split_by_format=False):
+                    blank = [{"values": [{} for _ in run]}]
+                    requests.append(update_cells(row_number - 1, run, blank, "userEnteredValue"))
+                if metadata and snap.rows[key].tagged:
+                    requests.append({"deleteDeveloperMetadata": {"dataFilter": lookup(key)}})
+        else:
+            deleted_rows = sorted(gone.values())
+            requests += [{"deleteDimension": {"range": row_range(r)}} for r in reversed(deleted_rows)]
+        if requests:
+            await self.client.batch_update(self.spreadsheet_id, requests)
+
+        def final_row(row_number: int) -> int:  # minus the deleted rows above it
+            return row_number - bisect_left(deleted_rows, row_number)
+
+        states = {
+            key: RowState(
+                key, final_row(row.row_number), app_hash(app_cells(schema, indexes, written.get(key, row.raw)))
+            )
+            for key, row in snap.rows.items()
+            if key not in gone
+        }
+        for i, (key, cells) in enumerate(created.items()):
+            states[key] = RowState(key, final_row(first_new + i), app_hash(app_cells(schema, indexes, cells)))
+        return ApplyResult(states, list(plan.deletes))
+
+    async def push(self, key: str, record: Mapping, *, lock: AsyncLock | None = None) -> RowState:
+        async with NullLock() if lock is None else lock:
+            snap = await self.read()  # ponytail: full-tab read per push, cache row lookups if push rate grows
+            if key in snap.duplicates:
+                raise SheetsyncError(f"key {key!r} is duplicated in the sheet (rows {snap.duplicates[key]})")
+            plan = plan_sync(self.schema, snap, {key: record}, {}, codecs=self.codecs)
+            return (await self.apply(plan, repair_formats=False)).states[key]
+
+    async def delete(self, key: str, state: RowState, *, lock: AsyncLock | None = None) -> None:
+        async with NullLock() if lock is None else lock:
+            snap = await self.read()
+            plan = plan_sync(self.schema, snap, {}, {key: state}, codecs=self.codecs)
+            await self.apply(plan, repair_formats=False)
 
 
 class PublicCsvTable:

@@ -30,11 +30,12 @@ from sheetsync.errors import (
 from sheetsync.lock import AsyncioLock, AsyncLock, NullLock
 from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
 from sheetsync.schema import Col, Column, Owner, TableSchema
-from sheetsync.table import PublicCsvTable, Table, build_snapshot
+from sheetsync.table import ApplyResult, PublicCsvTable, Table, build_snapshot
 
 __all__ = [
     "DEFAULT_CODECS",
     "ApiError",
+    "ApplyResult",
     "AsyncLock",
     "AsyncioLock",
     "BoolCodec",
