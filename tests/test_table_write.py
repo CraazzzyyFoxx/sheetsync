@@ -392,3 +392,32 @@ async def test_state_hash_of_skipped_app_cell_uses_the_sheet_cell():
     assert plan.updates == {}  # sheet keeps 1, nothing to write
     result = await table.apply(plan)
     assert result.states["a"].app_hash == app_hash(["a", 1])
+
+
+async def test_empty_tag_row_survives_a_stale_state_for_empty_key():
+    table, writes = world([sheet_row("a"), sheet_row("x")], tags={2: "a", 3: ""})
+    snap = await table.read()
+    assert list(snap.rows) == ["a"] and snap.orphans == [3]
+    plan = plan_sync(table.schema, snap, {"a": rec("a")}, {"": RowState("", 3, "x")})
+    result = await table.apply(plan)
+    assert "" not in result.states
+    assert not any(k in ("deleteDimension", "updateCells") for _, b in writes for k in kinds(b) if "requests" in b)
+
+
+async def test_written_row_hash_mixes_written_and_skipped_cells():
+    table, _ = world([["a", 1, "n", SERIAL, 1.5, True]])
+    schema = TableSchema(
+        columns=[
+            Column(field="id", header="ID"),
+            Column(field="qty", header="Qty", codec="skip"),
+            Column(field="price", header="Price", codec="float"),
+        ],
+        key_field="id",
+        identity="key_column",
+    )
+    table = table.client.table(SID, GID, schema, {**DEFAULT_CODECS, "skip": SkipCodec()})
+    record = {"id": "a", "qty": 99, "price": 2.5}
+    plan = plan_sync(schema, await table.read(), {"a": record}, {}, codecs=table.codecs)
+    assert "a" in plan.updates
+    result = await table.apply(plan)
+    assert result.states["a"].app_hash == app_hash(["a", 1, 2.5])  # qty stays 1 in the sheet, price becomes 2.5

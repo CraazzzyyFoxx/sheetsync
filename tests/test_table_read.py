@@ -90,6 +90,13 @@ def test_tagged_empty_rows_are_data_rows_even_past_the_values():
     assert s.orphans == []
 
 
+def test_empty_tag_suffix_is_not_an_identity():
+    rows = [HEADER, ["a", 1, ""], ["", "", ""]]
+    s = snap(rows, {2: ["t-a"], 3: [""]})
+    assert list(s.rows) == ["t-a"]
+    assert s.orphans == [3] and s.last_data_row == 3 and s.duplicates == {}
+
+
 def test_key_decoded_via_codec_as_str():
     schema = TableSchema(
         columns=[Column(field="id", header="ID", codec="int"), Column(field="d", header="D", codec="date")],

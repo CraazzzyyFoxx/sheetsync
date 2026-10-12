@@ -73,8 +73,8 @@ def build_snapshot(
     # a tagged row is a data row even when its synced cells are empty or it is past the end of `values`
     for row_number in range(first, max([len(rows), *tags]) + 1):
         cells = rows[row_number - 1] if row_number <= len(rows) else []
-        row_tags = tags.get(row_number, [])
-        if not row_tags and all(_is_empty(cells[i]) for i in data_indexes if i < len(cells)):
+        tagged_here = tags.get(row_number, [])
+        if not tagged_here and all(_is_empty(cells[i]) for i in data_indexes if i < len(cells)):
             continue
         last_data_row = row_number
         values, row_errors, row_warnings = decode_row(schema, indexes, cells, row_number, codecs, tz)
@@ -82,6 +82,7 @@ def build_snapshot(
             raise RowDecodeError(row_errors[0])
         errors += row_errors
         warnings += row_warnings
+        row_tags = [k for k in tagged_here if k]  # an empty suffix ("k:") is not an identity
         if len(row_tags) > 1:
             conflicted.update(row_tags)
         keys, tagged = row_tags, bool(row_tags)
