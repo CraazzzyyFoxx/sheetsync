@@ -339,3 +339,12 @@ def test_from_model_wraps_validation_errors():
         TableSchema.from_model(M, key_field="a")
     with pytest.raises(SchemaError, match="key_field"):
         TableSchema.from_model(Item)
+
+
+def test_resolve_two_fields_on_one_column_is_error():
+    with pytest.raises(SchemaError, match="'a'.*'b'"):  # header + index pins
+        resolve_columns(schema(col("a", "Name"), Column(field="b", index=1)), ["x", "Name"])
+    with pytest.raises(SchemaError, match="'a'.*'b'"):  # two index-only
+        resolve_columns(schema(Column(field="a", index=2), Column(field="b", index=2)), [])
+    with pytest.raises(SchemaError, match="'a'.*'b'"):  # same header, different fields
+        resolve_columns(schema(col("a", "Name"), col("b", "name")), ["Name"])
