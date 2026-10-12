@@ -201,3 +201,21 @@ def test_int_fallback_and_non_integer():
     assert warnings == ["number fallback"]
     with pytest.raises(ValueError, match="integer"):
         DEFAULT_CODECS["int"].decode("1,5", c)
+
+
+def test_number_pattern_keeps_signs():
+    c, warnings = make_ctx("-0.00")
+    assert DEFAULT_CODECS["float"].decode("-12.00", c) == -12.0
+    c2, _ = make_ctx("+0.00")
+    assert DEFAULT_CODECS["float"].decode("+12.00", c2) == 12.0
+    c3, _ = make_ctx('0.00 "v-"')
+    assert DEFAULT_CODECS["float"].decode("-3.50 v-", c3) == -3.5
+    assert warnings == []
+
+
+def test_number_pattern_quoted_digits_are_not_slots():
+    c, warnings = make_ctx('0 "v0"')
+    assert DEFAULT_CODECS["float"].decode("12 v0", c) == 12.0
+    c2, _ = make_ctx(r"0 \#")
+    assert DEFAULT_CODECS["float"].decode("12 #", c2) == 12.0
+    assert warnings == []

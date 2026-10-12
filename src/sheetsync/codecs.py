@@ -151,15 +151,20 @@ def _parse_number_text(text: str, ctx: Ctx) -> float:
         except ValueError:
             pass
     else:
-        slots = [i for i, ch in enumerate(pattern) if ch in "0#?"]
-        first, last = (slots[0], slots[-1] + 1) if slots else (0, len(pattern))
-        prefix, suffix = (re.sub(r'["\\]', "", pattern[:first]), re.sub(r'["\\]', "", pattern[last:]))
-        body = text.removeprefix(prefix).removesuffix(suffix).strip()
-        if "," in pattern[first:last]:  # grouping separators are only dropped when the pattern has them
+        # (text, quoted/escaped) tokens: literals never count as digit slots, signs are never affixes
+        toks = [(g[1:-1] if g[0] == '"' else g[-1], g[0] in '"\\') for g in re.findall(r'"[^"]*"|\\.|.', pattern, re.S)]
+        slots = [i for i, (t, lit) in enumerate(toks) if not lit and t in "0#?"]
+        first, last = (slots[0], slots[-1] + 1) if slots else (0, len(toks))
+
+        def affix(part):
+            return "".join(t for t, lit in part if lit or t not in "+-")
+
+        body = text.removeprefix(affix(toks[:first])).removesuffix(affix(toks[last:])).strip()
+        if any(t == "," and not lit for t, lit in toks[first:last]):  # drop grouping only if the pattern has it
             body = body.replace(",", "")
         n = _plain_number(body)
         if n is not None:
-            return n / 100 if "%" in pattern else n
+            return n / 100 if any(t == "%" and not lit for t, lit in toks) else n
     s = re.sub(r"[^0-9,.\-+eE%]", "", text)  # drops spaces, NBSP, narrow NBSP, currency symbols
     percent = s.endswith("%")
     s = s.removesuffix("%")
