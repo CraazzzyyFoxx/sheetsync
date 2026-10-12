@@ -219,3 +219,12 @@ def test_number_pattern_quoted_digits_are_not_slots():
     c2, _ = make_ctx(r"0 \#")
     assert DEFAULT_CODECS["float"].decode("12 #", c2) == 12.0
     assert warnings == []
+
+
+def test_percent_pattern_without_percent_text_is_not_scaled():
+    c, warnings = make_ctx("0%", "PERCENT")
+    assert DEFAULT_CODECS["float"].decode("12", c) == 12  # affix missing: fallback, which scales only on a "%"
+    assert warnings == ["number fallback"]
+    c2, warnings2 = make_ctx("$#,##0.00", "CURRENCY")
+    assert DEFAULT_CODECS["float"].decode("1,234.50", c2) == 1234.5
+    assert warnings2 == ["number fallback"]

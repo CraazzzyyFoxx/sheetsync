@@ -216,3 +216,11 @@ def test_default_codecs_registry():
     assert set(DEFAULT_CODECS) == {"str", "int", "float", "bool", "date", "datetime", "enum", "list"}
     with pytest.raises(TypeError):
         DEFAULT_CODECS["x"] = DEFAULT_CODECS["str"]  # type: ignore[index]
+
+
+def test_int_encode_rejects_beyond_float_precision():
+    codec = DEFAULT_CODECS["int"]
+    assert codec.encode(2**53, ctx()) == 2**53
+    for big in (2**53 + 1, -(2**53) - 1):
+        with pytest.raises(ValueError, match="2\\*\\*53"):
+            codec.encode(big, ctx())

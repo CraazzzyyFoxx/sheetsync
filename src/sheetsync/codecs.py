@@ -159,12 +159,14 @@ def _parse_number_text(text: str, ctx: Ctx) -> float:
         def affix(part):
             return "".join(t for t, lit in part if lit or t not in "+-")
 
-        body = text.removeprefix(affix(toks[:first])).removesuffix(affix(toks[last:])).strip()
-        if any(t == "," and not lit for t, lit in toks[first:last]):  # drop grouping only if the pattern has it
-            body = body.replace(",", "")
-        n = _plain_number(body)
-        if n is not None:
-            return n / 100 if any(t == "%" and not lit for t, lit in toks) else n
+        pre, suf = affix(toks[:first]), affix(toks[last:])
+        if text.startswith(pre) and text.endswith(suf):  # else the text is not in the pattern's shape: fall back
+            body = text[len(pre) : len(text) - len(suf)].strip()
+            if any(t == "," and not lit for t, lit in toks[first:last]):  # drop grouping only if the pattern has it
+                body = body.replace(",", "")
+            n = _plain_number(body)
+            if n is not None:
+                return n / 100 if any(t == "%" and not lit for t, lit in toks) else n
     s = re.sub(r"[^0-9,.\-+eE%]", "", text)  # drops spaces, NBSP, narrow NBSP, currency symbols
     percent = s.endswith("%")
     s = s.removesuffix("%")
@@ -222,6 +224,8 @@ class IntCodec:
         return int(n)
 
     def encode(self, value: int, ctx: Ctx) -> Cell:
+        if abs(value) > 2**53:
+            raise ValueError("integer exceeds 2**53; use a str column for large identifiers")
         return int(value)
 
 
