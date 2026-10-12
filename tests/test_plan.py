@@ -1,3 +1,4 @@
+import sys
 from zoneinfo import ZoneInfo
 
 from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
@@ -92,6 +93,22 @@ def test_delete_when_state_without_record():
 def test_ignore_delete_policy():
     p = plan(snap(), {}, {"gone": RowState("gone", 4, "h")}, on_app_delete="ignore")
     assert p.deletes == {}
+
+
+def test_drift_distinguishes_bool_from_number():
+    old = row("a", 2, qty=1)
+    edited = row("a", 2, qty=True)
+    p = plan(snap(edited), {"a": rec("a", qty=1)}, {"a": state_for(old)})
+    assert p.drift == {"a": {"qty": (True, 1)}}
+    assert "a" in p.updates
+
+
+def test_public_exports():
+    import sheetsync
+
+    for name in ("Plan", "Row", "RowState", "Snapshot", "app_cells", "app_hash", "plan_sync"):
+        assert name in sheetsync.__all__
+        assert getattr(sheetsync, name) is getattr(sys.modules["sheetsync.plan"], name)
 
 
 def test_drift_lists_changed_fields():

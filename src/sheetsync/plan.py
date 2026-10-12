@@ -110,7 +110,7 @@ def plan_sync(
             diff = {
                 f: (row.values[f], get_path(record, f))
                 for f, e, s in zip(app_fields, encoded, sheet, strict=True)
-                if _canonical(e) != _canonical(s)
+                if app_hash([e]) != app_hash([s])  # same canonicalisation as the hash: True is not 1
             }
             if diff:
                 drift[key] = diff

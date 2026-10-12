@@ -27,6 +27,7 @@ from sheetsync.errors import (
     SourceError,
 )
 from sheetsync.lock import AsyncioLock, AsyncLock, NullLock
+from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
 from sheetsync.schema import Col, Column, Owner, TableSchema
 
 __all__ = [
@@ -50,15 +51,22 @@ __all__ = [
     "NullLock",
     "NumberFormat",
     "Owner",
+    "Plan",
+    "Row",
     "RowDecodeError",
     "RowError",
+    "RowState",
     "RowWarning",
     "SchemaError",
     "SheetsyncError",
+    "Snapshot",
     "SourceError",
     "StrCodec",
     "TableSchema",
+    "app_cells",
+    "app_hash",
     "from_serial",
+    "plan_sync",
     "sheets_pattern_to_strptime",
     "to_serial",
 ]
