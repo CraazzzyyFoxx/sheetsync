@@ -49,32 +49,38 @@ src/sheetsync/
 ## 4. Schema
 
 ```python
-class Owner(StrEnum): APP = "app"; SHEET = "sheet"; SKIP = "skip"
+class Owner(StrEnum):
+    APP = "app"
+    SHEET = "sheet"
+    SKIP = "skip"
+
 
 class Column(BaseModel):
-    field: str                    # dotted path into the record dict, e.g. "price.dollar"
-    header: str | None = None     # resolved against header_row (preferred)
-    index: int | None = None      # 0-based fallback / pin; at least one of header/index required
-    codec: str = "str"            # name in the codec registry
+    field: str  # dotted path into the record dict, e.g. "price.dollar"
+    header: str | None = None  # resolved against header_row (preferred)
+    index: int | None = None  # 0-based fallback / pin; at least one of header/index required
+    codec: str = "str"  # name in the codec registry
     owner: Owner = Owner.APP
-    required: bool = False        # decode: empty cell → RowError
-    options: dict = {}            # codec params (valid_values, value_map, separator, true_values, ...)
-    format: NumberFormat | None = None   # display format override (§5.1)
+    required: bool = False  # decode: empty cell → RowError
+    options: dict = {}  # codec params (valid_values, value_map, separator, true_values, ...)
+    format: NumberFormat | None = None  # display format override (§5.1)
+
 
 class TableSchema(BaseModel):
     columns: list[Column]
-    header_row: int = 1           # 1-based
-    data_start_row: int | None = None   # default header_row + 1
+    header_row: int = 1  # 1-based
+    data_start_row: int | None = None  # default header_row + 1
     identity: Literal["metadata", "key_column", "metadata+key_column"] = "metadata"
-    key_field: str                # record field holding the key (always required)
-    metadata_prefix: str = "k:"   # metadataKey = prefix + key  [default]
+    key_field: str  # record field holding the key (always required)
+    metadata_prefix: str = "k:"  # metadataKey = prefix + key  [default]
     on_app_delete: Literal["delete_row", "clear", "ignore"] = "delete_row"
-    formats: dict[str, NumberFormat] = {}   # codec name → default display format (§5.1)
+    formats: dict[str, NumberFormat] = {}  # codec name → default display format (§5.1)
 
     @classmethod
     def from_json(cls, data: dict, codecs: Mapping[str, Codec]) -> "TableSchema": ...
     @classmethod
-    def from_model(cls, model: type[BaseModel], **table_opts) -> "TableSchema": ...
+    def from_model(cls, model: type[BaseModel], **table_opts) -> "TableSchema":
+        ...
         # fields annotated Annotated[T, Col(header=..., owner=..., codec=...)]
 ```
 
@@ -92,16 +98,18 @@ Validation (raises `SchemaError`; nothing is written before this passes):
 ```python
 Cell = str | float | bool | None
 
+
 @dataclass(frozen=True)
 class Ctx:
-    tz: ZoneInfo          # spreadsheet timezone (spreadsheets.get → properties.timeZone; CSV: constructor arg)
+    tz: ZoneInfo  # spreadsheet timezone (spreadsheets.get → properties.timeZone; CSV: constructor arg)
     options: Mapping[str, Any]
-    format: NumberFormat | None   # resolved display format of the column (§5.1)
-    warn: Callable[[str], None]   # codec reports a fallback parse → RowWarning (§5.1)
+    format: NumberFormat | None  # resolved display format of the column (§5.1)
+    warn: Callable[[str], None]  # codec reports a fallback parse → RowWarning (§5.1)
+
 
 class Codec(Protocol[T]):
-    def decode(self, raw: Cell, ctx: Ctx) -> T: ...      # raw may be a typed API value OR CSV text
-    def encode(self, value: T, ctx: Ctx) -> Cell: ...    # None → cell skipped, "" → cell cleared
+    def decode(self, raw: Cell, ctx: Ctx) -> T: ...  # raw may be a typed API value OR CSV text
+    def encode(self, value: T, ctx: Ctx) -> Cell: ...  # None → cell skipped, "" → cell cleared
 ```
 
 - The registry is explicit: `DEFAULT_CODECS | {"battle_tag": BattleTag()}`. There is no global mutable registry.
@@ -122,7 +130,7 @@ numbers), and how they look is controlled only by `userEnteredFormat.numberForma
 ```python
 class NumberFormat(BaseModel):
     type: Literal["DATE", "TIME", "DATE_TIME", "NUMBER", "CURRENCY", "PERCENT", "SCIENTIFIC", "TEXT"]
-    pattern: str | None = None   # Sheets pattern syntax; None → spreadsheet locale default for `type`
+    pattern: str | None = None  # Sheets pattern syntax; None → spreadsheet locale default for `type`
 ```
 
 ```json
@@ -201,17 +209,19 @@ class NumberFormat(BaseModel):
 
 ```python
 @dataclass(frozen=True)
-class RowState:            # persisted by the app
+class RowState:  # persisted by the app
     key: str
-    row_number: int | None # hint only
-    app_hash: str          # hash of the app-owned encoded values last written
+    row_number: int | None  # hint only
+    app_hash: str  # hash of the app-owned encoded values last written
+
 
 @dataclass(frozen=True)
 class Row:
     key: str
     row_number: int
-    values: dict[str, Any]   # decoded, field → value (app + sheet columns)
+    values: dict[str, Any]  # decoded, field → value (app + sheet columns)
     raw: tuple[Cell, ...]
+
 
 @dataclass(frozen=True)
 class RowError:
@@ -220,29 +230,32 @@ class RowError:
     raw: Cell
     message: str
 
+
 @dataclass(frozen=True)
 class RowWarning:
     row_number: int
     field: str
     raw: Cell
-    matched_format: str      # fallback format that parsed the value
+    matched_format: str  # fallback format that parsed the value
+
 
 @dataclass(frozen=True)
 class Snapshot:
     rows: dict[str, Row]
-    errors: list[RowError]      # never capped, never silently dropped
+    errors: list[RowError]  # never capped, never silently dropped
     warnings: list[RowWarning]  # fallback parses (§5.1), never capped
-    orphans: list[int]          # data rows with no resolvable key
+    orphans: list[int]  # data rows with no resolvable key
     duplicates: dict[str, list[int]]
+
 
 @dataclass(frozen=True)
 class Plan:
-    creates: dict[str, dict]            # key → record
-    updates: dict[str, dict]            # only where the app-owned hash differs from the sheet
-    deletes: dict[str, RowState]        # app records gone, per on_app_delete
-    pulls: dict[str, dict[str, Any]]    # key → all sheet-owned values, every reconcile (app upserts idempotently)
+    creates: dict[str, dict]  # key → record
+    updates: dict[str, dict]  # only where the app-owned hash differs from the sheet
+    deletes: dict[str, RowState]  # app records gone, per on_app_delete
+    pulls: dict[str, dict[str, Any]]  # key → all sheet-owned values, every reconcile (app upserts idempotently)
     drift: dict[str, dict[str, tuple[Any, Any]]]  # key → field → (sheet value, app value) where sheet ≠ last written
-    missing_in_sheet: list[str]         # app has a state, sheet has no row; report only, app decides
+    missing_in_sheet: list[str]  # app has a state, sheet has no row; report only, app decides
     orphans: list[int]
 ```
 
@@ -251,10 +264,10 @@ client = SheetsClient(service_account_info)
 table = client.table(spreadsheet_id, gid, schema, codecs=DEFAULT_CODECS)
 csv = PublicCsvTable(url, schema, codecs=..., tz=ZoneInfo("Europe/Moscow"))  # read() only
 
-snap = await table.read(strict=False)            # strict=True → raise on first RowError
+snap = await table.read(strict=False)  # strict=True → raise on first RowError
 plan = plan_sync(schema, snap, records, states)  # pure; records: {key: dict}, states: {key: RowState}
-result = await table.apply(plan)                 # caller holds the lock → ApplyResult(states, removed)
-state = await table.push(key, record, lock=lock) # single upsert: read + plan + apply under the lock
+result = await table.apply(plan)  # caller holds the lock → ApplyResult(states, removed)
+state = await table.push(key, record, lock=lock)  # single upsert: read + plan + apply under the lock
 await table.delete(key, state, lock=lock)
 ```
 
