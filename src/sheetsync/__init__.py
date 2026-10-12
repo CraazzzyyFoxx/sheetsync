@@ -1,3 +1,4 @@
+from sheetsync.client import SheetsClient
 from sheetsync.codecs import (
     DEFAULT_CODECS,
     BoolCodec,
@@ -58,6 +59,7 @@ __all__ = [
     "RowState",
     "RowWarning",
     "SchemaError",
+    "SheetsClient",
     "SheetsyncError",
     "Snapshot",
     "SourceError",
