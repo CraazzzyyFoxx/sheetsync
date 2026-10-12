@@ -27,6 +27,7 @@ from sheetsync.errors import (
     SourceError,
 )
 from sheetsync.lock import AsyncioLock, AsyncLock, NullLock
+from sheetsync.schema import Col, Column, Owner, TableSchema
 
 __all__ = [
     "DEFAULT_CODECS",
@@ -36,6 +37,8 @@ __all__ = [
     "BoolCodec",
     "Cell",
     "Codec",
+    "Col",
+    "Column",
     "Ctx",
     "DateCodec",
     "DateTimeCodec",
@@ -46,6 +49,7 @@ __all__ = [
     "LockTimeout",
     "NullLock",
     "NumberFormat",
+    "Owner",
     "RowDecodeError",
     "RowError",
     "RowWarning",
@@ -53,6 +57,7 @@ __all__ = [
     "SheetsyncError",
     "SourceError",
     "StrCodec",
+    "TableSchema",
     "from_serial",
     "sheets_pattern_to_strptime",
     "to_serial",
