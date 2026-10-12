@@ -15,7 +15,7 @@ from sheetsync import (
     app_hash,
     plan_sync,
 )
-from sheetsync.codecs import NumberFormat
+from sheetsync.codecs import DEFAULT_CODECS, NumberFormat
 
 SID = "sheet123"
 GID = 42
@@ -370,3 +370,25 @@ async def test_delete_removes_row_and_ignores_absent_key():
     writes.clear()
     await table.delete("zzz", stale("zzz"))
     assert writes == []
+
+
+class SkipCodec:
+    def decode(self, raw, ctx):
+        return raw
+
+    def encode(self, value, ctx):
+        return None  # leave the sheet cell alone
+
+
+async def test_state_hash_of_skipped_app_cell_uses_the_sheet_cell():
+    table, writes = world([["a", 1, "n", SERIAL, 1.5, True]])
+    schema = TableSchema(
+        columns=[Column(field="id", header="ID"), Column(field="qty", header="Qty", codec="skip")],
+        key_field="id",
+        identity="key_column",
+    )
+    table = table.client.table(SID, GID, schema, {**DEFAULT_CODECS, "skip": SkipCodec()})
+    plan = plan_sync(schema, await table.read(), {"a": {"id": "a", "qty": 5}}, {}, codecs=table.codecs)
+    assert plan.updates == {}  # sheet keeps 1, nothing to write
+    result = await table.apply(plan)
+    assert result.states["a"].app_hash == app_hash(["a", 1])

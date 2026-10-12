@@ -68,6 +68,11 @@ def app_cells(schema: TableSchema, indexes: Mapping[str, int], cells: Sequence[C
     ]
 
 
+def fill_skipped(encoded: Sequence[Cell], current: Sequence[Cell]) -> list[Cell]:
+    """A codec that encodes to None leaves the sheet cell as is, so the `current` cell stands in for it."""
+    return [c if e is None else e for e, c in zip(encoded, current, strict=True)]
+
+
 def app_hash(cells: Sequence[Cell]) -> str:
     canonical = [_canonical(c) for c in cells]
     blob = json.dumps(canonical, ensure_ascii=False, separators=(",", ":"))
@@ -101,8 +106,10 @@ def plan_sync(
             else:
                 creates[key] = dict(record)
             continue
-        encoded = app_cells(schema, indexes, encode_record(schema, indexes, record, codecs, snapshot.tz))
         sheet = app_cells(schema, indexes, row.raw)
+        encoded = fill_skipped(
+            app_cells(schema, indexes, encode_record(schema, indexes, record, codecs, snapshot.tz)), sheet
+        )
         if app_hash(encoded) != app_hash(sheet):
             updates[key] = dict(record)
         state = states.get(key)

@@ -13,7 +13,7 @@ import httpx
 from sheetsync.codecs import DEFAULT_CODECS, Cell, Codec, NumberFormat, sheets_pattern_to_strptime
 from sheetsync.errors import RowDecodeError, SchemaError, SheetsyncError, SourceError
 from sheetsync.lock import AsyncLock, NullLock
-from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
+from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, fill_skipped, plan_sync
 from sheetsync.schema import Column, Owner, TableSchema, _is_empty, decode_row, encode_record, resolve_columns
 
 if TYPE_CHECKING:
@@ -267,10 +267,14 @@ class Table:
         def final_row(row_number: int) -> int:  # minus the deleted rows above it
             return row_number - bisect_left(deleted_rows, row_number)
 
+        def after_write(row: Row) -> str:
+            current = app_cells(schema, indexes, row.raw)
+            if row.key not in written:
+                return app_hash(current)
+            return app_hash(fill_skipped(app_cells(schema, indexes, written[row.key]), current))
+
         states = {
-            key: RowState(
-                key, final_row(row.row_number), app_hash(app_cells(schema, indexes, written.get(key, row.raw)))
-            )
+            key: RowState(key, final_row(row.row_number), after_write(row))
             for key, row in snap.rows.items()
             if key not in gone
         }

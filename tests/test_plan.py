@@ -1,6 +1,7 @@
 import sys
 from zoneinfo import ZoneInfo
 
+from sheetsync.codecs import DEFAULT_CODECS
 from sheetsync.plan import Plan, Row, RowState, Snapshot, app_cells, app_hash, plan_sync
 from sheetsync.schema import Column, Owner, TableSchema
 
@@ -159,3 +160,25 @@ def test_orphans_and_snapshot_passed_through():
     p = plan(snapshot, {})
     assert p.orphans == [7, 9]
     assert p.snapshot is snapshot
+
+
+class SkipCodec:
+    """Custom codec whose encode returns None = leave the sheet cell alone."""
+
+    def decode(self, raw, ctx):
+        return raw
+
+    def encode(self, value, ctx):
+        return None
+
+
+def test_skipped_app_cell_compares_against_the_sheet_cell():
+    schema = TableSchema(
+        columns=[Column(field="id", header="id"), Column(field="name", header="name", codec="skip")],
+        key_field="id",
+    )
+    codecs = {**DEFAULT_CODECS, "skip": SkipCodec()}
+    r = row("a", 2, name="keep")
+    state = RowState("a", 2, app_hash(app_cells(schema, INDEXES, r.raw)))
+    p = plan_sync(schema, snap(r), {"a": {"id": "a", "name": "anything"}}, {"a": state}, codecs=codecs)
+    assert not p.updates and not p.drift
