@@ -12,6 +12,8 @@ from sheetsync.codecs import (
     ListCodec,
     NumberFormat,
     StrCodec,
+    from_serial,
+    to_serial,
 )
 from sheetsync.errors import (
     ApiError,
@@ -50,4 +52,6 @@ __all__ = [
     "SheetsyncError",
     "SourceError",
     "StrCodec",
+    "from_serial",
+    "to_serial",
 ]

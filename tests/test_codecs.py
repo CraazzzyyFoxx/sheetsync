@@ -107,6 +107,7 @@ def test_serial_rounds_to_millisecond():
 def test_decode_typed_numbers():
     c = ctx()
     assert DEFAULT_CODECS["date"].decode(46307, c) == date(2026, 10, 12)
+    assert DEFAULT_CODECS["date"].decode(46307.5, c) == date(2026, 10, 12)  # fractional serial -> its date
     assert DEFAULT_CODECS["datetime"].decode(46307.5, c) == datetime(2026, 10, 12, 12, 0, tzinfo=MSK)
     assert DEFAULT_CODECS["str"].decode(5.0, c) == "5"
     assert DEFAULT_CODECS["str"].decode(5.5, c) == "5.5"
@@ -136,11 +137,13 @@ def test_decode_canonical_text():
         ("int", "abc"),
         ("float", False),
         ("float", "abc"),
-        ("date", 46307.5),  # has a time part
         ("date", "2026-10-12T12:00:00"),
         ("date", "not a date"),
         ("datetime", True),
         ("datetime", "not a date"),
+        ("date", 1e300),
+        ("datetime", 1e300),
+        ("datetime", float("inf")),
     ],
 )
 def test_decode_errors(name, raw):
@@ -181,7 +184,9 @@ def test_bool_custom_sets():
 def test_enum_valid_values():
     codec, c = DEFAULT_CODECS["enum"], ctx(valid_values=["new", "done", 3])
     assert codec.decode("done", c) == "done"
-    assert codec.decode(3.0, c) == 3  # numeric cell matches by text, returns the valid value
+    assert codec.decode(3, c) == 3  # numeric cell matches by str(raw), returns the valid value
+    with pytest.raises(ValueError):
+        codec.decode(3.0, c)  # str(3.0) == "3.0"
     assert codec.encode("new", c) == "new"
     with pytest.raises(ValueError, match="new"):
         codec.decode("bogus", c)

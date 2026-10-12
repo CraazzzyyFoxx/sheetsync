@@ -46,8 +46,11 @@ def to_serial(dt: datetime, tz: ZoneInfo) -> float:
 
 def from_serial(x: float, tz: ZoneInfo) -> datetime:
     """Sheets serial number -> aware datetime in `tz`, rounded to the millisecond."""
-    ms = round(timedelta(days=x) / _MS)
-    return (_EPOCH + ms * _MS).replace(tzinfo=tz)
+    try:
+        ms = round(timedelta(days=x) / _MS)
+        return (_EPOCH + ms * _MS).replace(tzinfo=tz)
+    except OverflowError:
+        raise ValueError(f"serial {x} is out of the supported date range") from None
 
 
 # Task 2 plugs the formatted-text parsers in here; for now only canonical text is accepted.
@@ -137,7 +140,7 @@ class BoolCodec:
 class DateCodec:
     def decode(self, raw: Cell, ctx: Ctx) -> date:
         dt = _aware(raw, ctx)
-        if dt.time() != datetime.min.time():
+        if isinstance(raw, str) and dt.time() != datetime.min.time():  # a fractional serial just yields its date
             raise ValueError(f"expected a date without a time, got {raw!r}")
         return dt.date()
 
@@ -159,7 +162,7 @@ class DateTimeCodec:
 
 class EnumCodec:
     def decode(self, raw: Cell, ctx: Ctx) -> Any:
-        text = _text(raw)
+        text = str(raw)
         if "value_map" in ctx.options:
             value_map = ctx.options["value_map"]
             if text not in value_map:
@@ -191,7 +194,7 @@ class ListCodec:
 
     def decode(self, raw: Cell, ctx: Ctx) -> list[Any]:
         sep = ctx.options.get("separator", ", ")
-        parts = (p.strip() for p in _text(raw).split(sep))
+        parts = (p.strip() for p in str(raw).split(sep))
         return [self.item.decode(p, ctx) for p in parts if p]
 
     def encode(self, value: list[Any], ctx: Ctx) -> Cell:
