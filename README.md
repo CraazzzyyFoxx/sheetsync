@@ -12,7 +12,8 @@ uv add "sheetsync @ git+<repo-url>@v0.1.0"
 
 ## Quickstart
 
-Describe the tab as a schema (JSON-shaped dict, a `TableSchema(...)` or `TableSchema.from_model(Model)`):
+Describe the tab as a schema (JSON-shaped dict, a `TableSchema(...)`, or `TableSchema.from_model(Model, key_field="id")`;
+`key_field` is required in every form):
 
 ```python
 from datetime import date

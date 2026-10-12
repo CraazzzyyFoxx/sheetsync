@@ -35,14 +35,8 @@ def tab_url(spreadsheet_id: str, gid: int) -> str:
     return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={gid}"
 
 
-async def report(client: SheetsClient, table, spreadsheet_id: str, gid: int) -> None:
-    """Print which tags sit on which rows: via the library for the scratch tab, raw search for every tab."""
-    snap = await table.read()
-    print("  scratch tab (library read): row | tag | ID cell")
-    for row in sorted(snap.rows.values(), key=lambda r: r.row_number):
-        flag = "" if row.values["id"] == row.key else "   <-- tag != ID cell"
-        print(f"    {row.row_number:>3} | {row.key:<4} | {row.values['id']}{flag}")
-    print(f"  duplicates={snap.duplicates} orphans={snap.orphans} errors={len(snap.errors)}")
+async def print_tags(client: SheetsClient, spreadsheet_id: str, scratch_gid: int | None) -> None:
+    """Raw ROW-metadata search over the whole spreadsheet, printed per tab as row:tag."""
     found = await client.search_developer_metadata(
         spreadsheet_id, [{"developerMetadataLookup": {"locationType": "ROW"}}]
     )
@@ -51,11 +45,22 @@ async def report(client: SheetsClient, table, spreadsheet_id: str, gid: int) -> 
         meta = match["developerMetadata"]
         span = meta["location"]["dimensionRange"]
         by_sheet.setdefault(span["sheetId"], {})[span["startIndex"] + 1] = meta["metadataKey"]
+    if not by_sheet:
+        print("  all ROW tags: none")
     for sheet_id, tags in sorted(by_sheet.items()):
-        label = "scratch" if sheet_id == gid else "other tab"
-        print(
-            f"  all ROW tags, sheetId={sheet_id} ({label}): " + ", ".join(f"{r}:{k}" for r, k in sorted(tags.items()))
-        )
+        label = "" if scratch_gid is None else " (scratch)" if sheet_id == scratch_gid else " (other tab)"
+        print(f"  all ROW tags, sheetId={sheet_id}{label}: " + ", ".join(f"{r}:{k}" for r, k in sorted(tags.items())))
+
+
+async def report(client: SheetsClient, table, spreadsheet_id: str, gid: int) -> None:
+    """Print which tags sit on which rows: via the library for the scratch tab, raw search for every tab."""
+    snap = await table.read()
+    print("  scratch tab (library read): row | tag | ID cell")
+    for row in sorted(snap.rows.values(), key=lambda r: r.row_number):
+        flag = "" if row.values["id"] == row.key else "   <-- tag != ID cell"
+        print(f"    {row.row_number:>3} | {row.key:<4} | {row.values['id']}{flag}")
+    print(f"  duplicates={snap.duplicates} orphans={snap.orphans} errors={len(snap.errors)}")
+    await print_tags(client, spreadsheet_id, gid)
 
 
 async def main() -> None:
@@ -81,15 +86,9 @@ async def main() -> None:
             for n, step in enumerate(STEPS, 1):
                 print(f"\nStep {n}: {step}")
                 if n == len(STEPS):
-                    copy_id = input("Copy's spreadsheet id (empty = skip): ").strip()
-                    if copy_id:
-                        copy_snap = await client.search_developer_metadata(
-                            copy_id, [{"developerMetadataLookup": {"locationType": "ROW"}}]
-                        )
-                        keys = sorted(
-                            m["developerMetadata"]["metadataKey"] for m in copy_snap.get("matchedDeveloperMetadata", [])
-                        )
-                        print(f"  tags found in the copy: {keys or 'none'}")
+                    if copy_id := input("Copy's spreadsheet id (empty = skip): ").strip():
+                        print("  copied file:")
+                        await print_tags(client, copy_id, None)
                     continue
                 input("Press Enter when done... ")
                 await report(client, table, spreadsheet_id, gid)
