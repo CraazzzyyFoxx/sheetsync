@@ -5,10 +5,10 @@ Async Python library for bidirectional Google Sheets sync (Python >= 3.12). The 
 ## Install
 
 ```
-uv add "sheetsync @ git+<repo-url>@v0.1.0"
+uv add "sheetsync @ git+https://github.com/CraazzzyyFoxx/sheetsync@v0.1.0"
 ```
 
-`<repo-url>`: set once the repo has a remote. Releases are git tags.
+Releases are git tags.
 
 ## Quickstart
 
